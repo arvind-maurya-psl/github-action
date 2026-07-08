@@ -27,6 +27,7 @@ public class UserController {
 
     private final UserService userService;
 
+    // create user API
     @PostMapping
     public ResponseEntity<UserDTO> createUser(@Valid @RequestBody UserDTO userDTO) {
         UserDTO createdUser = userService.createUser(userDTO);
