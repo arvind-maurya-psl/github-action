@@ -48,4 +48,4 @@ jobs:
           name: user-management-jar
 
       - name: Output content
-        run: ls -l target/
+        run: ls
