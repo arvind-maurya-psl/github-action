@@ -34,6 +34,16 @@ jobs:
       - name: Build Maven Project
         run: mvn clean package -DskipTests
 
+      - name: Debug OIDC sub claim
+        run: |
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
+          PAYLOAD=$(echo $TOKEN | cut -d. -f2 | tr '_-' '/+' | awk '{l=length($0)%4; if(l==2)$0=$0"=="; else if(l==3)$0=$0"="; print $0}' | base64 -d 2>/dev/null || echo '{}')
+          echo "sub:              $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("sub","<missing>"))')"
+          echo "iss:              $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("iss","<missing>"))')"
+          echo "job_workflow_ref: $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("job_workflow_ref","<missing>"))')"
+          echo "repository:       $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("repository","<missing>"))')"
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4.1.0
         with:
