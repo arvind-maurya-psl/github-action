@@ -1,15 +1,6 @@
 name: Terraform Infrastructure
 
 on:
-  push:
-    branches: [main, develop, develop-aws]
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform.yml'
-  pull_request:
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform.yml'
   workflow_dispatch:
     inputs:
       action:
