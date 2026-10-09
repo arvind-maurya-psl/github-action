@@ -1,0 +1,124 @@
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches: [main, develop, develop-aws]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform.yml'
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Terraform action to run
+        type: choice
+        required: true
+        default: plan
+        options: [plan, apply, destroy]
+      image_tag:
+        description: Image tag in the existing ECR repository
+        type: string
+        required: false
+        default: latest
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+  TF_WORKING_DIR: terraform
+  TF_VERSION: 1.14.2
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: '0'
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'plan' }}
+    runs-on: ubuntu-latest
+    # Add `environment: aws-infra` here to gate apply/destroy behind a manual approval.
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ vars.TF_STATE_KEY || 'user-management/ecs-fargate/dev.tfstate' }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: terraform validate -no-color
+
+      - name: Terraform Plan
+        if: github.event_name != 'workflow_dispatch' || inputs.action != 'destroy'
+        id: plan
+        run: |
+          terraform plan -no-color -lock-timeout=5m \
+            -var="image_tag=${IMAGE_TAG}" \
+            -out=tfplan
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
+
+      - name: Publish plan summary
+        if: steps.plan.outcome == 'success'
+        run: |
+          {
+            echo '### Terraform Plan'
+            echo '```terraform'
+            terraform show -no-color tfplan | tail -c 60000
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
+        run: terraform apply -no-color -lock-timeout=5m -auto-approve tfplan
+
+      - name: Terraform Destroy
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'destroy'
+        run: |
+          terraform destroy -no-color -lock-timeout=5m -auto-approve \
+            -var="image_tag=${IMAGE_TAG}"
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
+
+      - name: Publish outputs
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'apply'
+        run: |
+          {
+            echo '### Stack outputs'
+            echo '```'
+            terraform output -no-color
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

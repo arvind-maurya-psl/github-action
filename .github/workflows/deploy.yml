@@ -6,77 +6,99 @@ on:
       - main
       - develop
       - develop-aws
+    paths-ignore:
+      - 'terraform/**'
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Override the image tag to build and deploy
+        type: string
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-  ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
-  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+  AWS_REGION: us-east-1
+  # Repository already exists in ECR; this pipeline only pushes to it.
+  ECR_REPOSITORY: viru/user-management
+  ECS_CLUSTER: user-management-dev-cluster
+  ECS_SERVICE: user-management-dev-service
+  ECS_TASK_FAMILY: user-management-dev-task
+  CONTAINER_NAME: springboot-container
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  build-and-deploy:
+    name: Build image and deploy to ECS
     runs-on: ubuntu-latest
 
-    permissions:
-      id-token: write
-      contents: read
-
     steps:
-      - name: Checkout Source
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: '21'
+          cache: maven
 
-      - name: Build Maven Project
-        run: mvn clean package -DskipTests
-
-      - name: Debug OIDC sub claim
-        run: |
-          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
-          PAYLOAD=$(echo $TOKEN | cut -d. -f2 | tr '_-' '/+' | awk '{l=length($0)%4; if(l==2)$0=$0"=="; else if(l==3)$0=$0"="; print $0}' | base64 -d 2>/dev/null || echo '{}')
-          echo "sub:              $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("sub","<missing>"))')"
-          echo "iss:              $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("iss","<missing>"))')"
-          echo "job_workflow_ref: $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("job_workflow_ref","<missing>"))')"
-          echo "repository:       $(echo $PAYLOAD | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("repository","<missing>"))')"
+      - name: Build and test
+        run: mvn --batch-mode clean verify
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4.1.0
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, Tag and Push Docker Image
+      - name: Build, tag and push image
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: 1.0.${{ github.run_number }}
+          IMAGE_TAG: ${{ inputs.image_tag || format('1.0.{0}', github.run_number) }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          set -euo pipefail
+          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build -t "$IMAGE" -t "$ECR_REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$IMAGE"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      - name: Download current task definition
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_FAMILY" \
+            --query 'taskDefinition' \
+            --output json > task-definition.json
 
-#      - name: Fill in Task Definition
-#        id: task-def
-#        uses: aws-actions/amazon-ecs-render-task-definition@v1
-#        with:
-#          task-definition: .aws/task-definition.json
-#          container-name: springboot-container
-#          image: ${{ steps.build-image.outputs.image }}
-#
-#      - name: Deploy to ECS
-#        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-#        with:
-#          task-definition: ${{ steps.task-def.outputs.task-definition }}
-#          service: ${{ env.ECS_SERVICE }}
-#          cluster: ${{ env.ECS_CLUSTER }}
-#          wait-for-service-stability: true
+      - name: Render task definition with the new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Summary
+        run: echo "Deployed image ${{ steps.build-image.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
