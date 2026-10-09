@@ -12,15 +12,15 @@ health_check_path = "/api/health"
 
 task_cpu      = 512
 task_memory   = 1024
-desired_count = 2
+desired_count = 1
 
 # Set to false to run tasks in public subnets and skip NAT gateway cost.
 enable_nat_gateway = true
 single_nat_gateway = true
 
-enable_autoscaling       = true
-autoscaling_min_capacity = 2
-autoscaling_max_capacity = 6
+enable_autoscaling       = false
+autoscaling_min_capacity = 1
+autoscaling_max_capacity = 1
 
 container_environment = {
   SPRING_PROFILES_ACTIVE = "prod"

@@ -136,19 +136,19 @@ variable "log_retention_in_days" {
 variable "enable_autoscaling" {
   description = "Enable Application Auto Scaling for the ECS service."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "autoscaling_min_capacity" {
   description = "Minimum task count when autoscaling is enabled."
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "autoscaling_max_capacity" {
   description = "Maximum task count when autoscaling is enabled."
   type        = number
-  default     = 6
+  default     = 1
 }
 
 variable "autoscaling_cpu_target" {
